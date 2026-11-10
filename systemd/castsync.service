@@ -1,0 +1,12 @@
+[Unit]
+Description=castsync: publish finished live streams to Libsyn as MP3
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/castsync/venv/bin/castsync -c %h/.config/castsync/config.yaml run
+Nice=10
+IOSchedulingClass=idle
+# Long streams can take a while to download/convert/upload
+TimeoutStartSec=3h

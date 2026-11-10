@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "castsync"
+version = "1.0.0"
+description = "Turn finished Restream/YouTube/Twitch/Facebook live streams into Libsyn MP3 episodes"
+requires-python = ">=3.9"
+dependencies = ["requests>=2.28", "PyYAML>=6.0", "yt-dlp>=2024.1.1"]
+
+[project.scripts]
+castsync = "castsync.cli:main"
+
+[tool.setuptools]
+packages = ["castsync"]

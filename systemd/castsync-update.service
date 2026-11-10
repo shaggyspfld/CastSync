@@ -1,0 +1,8 @@
+[Unit]
+Description=Keep yt-dlp current (platforms change often)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/castsync/venv/bin/pip install -q --upgrade yt-dlp

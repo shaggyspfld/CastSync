@@ -1,0 +1,191 @@
+# castsync configuration. Copy to ~/.config/castsync/config.yaml
+# Secrets can live in ~/.config/castsync/castsync.env (KEY=value lines) and be
+# referenced here as ${KEY}.
+
+# Where finished episodes are posted:
+#   libsyn      - FTP upload (you publish in Libsyn), or full automation via the
+#                 Libsyn API (only available on Libsyn's top plans)
+#   transistor  - fully automatic on every Transistor plan: upload, create, publish
+destination: libsyn
+
+general:
+  show_name: "My Podcast"
+  lookback_days: 7            # only consider streams that started in the last N days.
+                              # Keep this small on the first run so it doesn't upload your back catalog.
+  max_episodes_per_run: 2     # episodes handled per hourly run, newest first; the rest
+                              # wait for the next run
+  max_attempts: 3             # retries for a failing stream before giving up (then emailed)
+  # Local files after each episode is handled (uploaded, failed or waiting):
+  #   nothing                  delete everything - keeps the machine clean (default)
+  #   originals                keep only the downloaded audio
+  #   originals_and_converted  keep both
+  #   converted                keep only the MP3 that went to Libsyn
+  keep_files: nothing
+  #keep_dir: ~/Podcast/castsync   # where kept files go (originals/ and converted/);
+  #                                # default: inside the work folder
+  keep_days: 14               # delete kept files after this many days (0 = keep forever)
+  #state_dir: ~/.local/share/castsync
+  #work_dir:  ~/.local/share/castsync/work
+
+# --- Where streams are found -------------------------------------------------
+restream:
+  enabled: true
+  # Create an app at https://developers.restream.io (redirect URI below must match).
+  client_id: ${RESTREAM_CLIENT_ID}
+  client_secret: ${RESTREAM_CLIENT_SECRET}
+  redirect_uri: http://localhost:8765/callback
+  include_record_only: false
+
+# Optional: scan the platforms directly too (catches streams not done via Restream,
+# and is the fallback download source when Restream's recording is missing/expired).
+platforms:
+  channels:
+    - https://www.youtube.com/@YourChannel/streams
+    # - https://www.twitch.tv/yourchannel/videos?filter=archives
+    # - https://www.facebook.com/YourPage/live_videos
+  max_items_per_channel: 10
+  # When Restream no longer has a stream's recording, the replay is downloaded from
+  # these platforms in this order. Leave a platform out to never download from it.
+  download_order: [youtube, facebook, twitch]
+  #cookies_file: ~/.config/castsync/cookies.txt   # only if a platform needs a login
+
+filters:
+  min_duration_minutes: 10    # ignore test streams
+  settle_minutes: 20          # wait this long after a stream ends before grabbing it
+  skip_title_regex:
+    - "\\btest\\b"
+    # - "pre-?show"
+
+# --- Duplicate protection -------------------------------------------------------
+# A stream is treated as already on Libsyn if its title matches an episode, OR if
+# any date in the stream's names matches any date in an episode's title or audio
+# file name (2026-11-09, 11/9/2026, Nov 9th, 9 November 2026, 20261109 ...).
+# When a stream is held back only because of a date, you get an email; use
+# `castsync allow <key>` to upload it anyway (e.g. two shows on the same day).
+matching:
+  match_air_date: true        # also treat the day the stream aired as part of its name
+  date_order: mdy             # how to read 11/09/2026: mdy (US) or dmy
+
+# --- Episode details ----------------------------------------------------------
+episode:
+  # The episode's name is exactly this template - you control the whole thing.
+  #   {topic}        just the episode's own part of the stream title
+  #                  ("PTR Radio (11/2/2026) - we're sooo tired" -> "we're sooo tired")
+  #   {title}        the whole stream title (after strip_from_title)
+  #   {stream_title} the whole stream title, untouched
+  #   {show}         general.show_name
+  #   {short_date}   11/2/2026     {pretty_date} November 2, 2026     {date} 2026-11-02
+  #   {date:FORMAT}  any date format, e.g. {date:%m/%d/%y} -> 11/02/26, {date:%b %-d} -> Nov 2
+  # Dates are the day the stream aired. Example:
+  #   title_template: "{show} ({short_date}) - {topic}"  ->  PTR Radio (11/2/2026) - we're sooo tired
+  # Fix episodes already published under an old template with: castsync retitle
+  title_template: "{title}"
+  strip_from_title:           # regexes removed from the stream title
+    - "\\s*\\|\\s*LIVE\\s*$"
+    - "🔴"
+  filename_template: "{date}-{slug}.mp3"
+  artist: "My Podcast"
+  description_footer: ""
+
+# --- MP3 quality (what gets uploaded to your host) ----------------------------------
+# Default: 64 kbps, 44.1 kHz, mono - a good size/quality balance for spoken word
+# (about 29 MB per hour). Friendly values are fine: 64, "64k", "64kbps" /
+# 44100, "44.1k", "44khz" / mono, stereo, 1, 2.
+#   Common choices:            per hour
+#     64k  44.1kHz mono        ~29 MB   talk shows (default)
+#     96k  44.1kHz mono        ~43 MB   music beds / more headroom
+#     128k 44.1kHz stereo      ~58 MB   music-heavy shows
+#     32k  22.05kHz mono       ~14 MB   smallest; noticeably lower quality
+# Allowed bitrates depend on the sample rate:
+#   32000/44100/48000 Hz: 32 40 48 56 64 80 96 112 128 160 192 224 256 320
+#   16000/22050/24000 Hz: 8 16 24 32 40 48 56 64 80 96 112 128 144 160
+audio:
+  bitrate: 64k
+  sample_rate: 44.1khz
+  channels: mono
+  bitrate_mode: cbr           # cbr (recommended for podcast hosts) or vbr
+  #vbr_quality: 6            # only for vbr: 0 = best/biggest ... 9 = smallest
+  loudnorm: true              # even out volume
+  target_lufs: -16            # -16 is the usual podcast target; some use -19 for mono
+  trim_start_seconds: 0       # e.g. cut a pre-roll countdown
+  trim_end_seconds: 0
+
+# --- Libsyn -------------------------------------------------------------------
+libsyn:
+  # Your show's public RSS feed. Used to tell which episodes already exist.
+  feed_url: https://yourshow.libsyn.com/rss
+
+  # ftp = upload MP3 to your Libsyn FTP dropbox (email tells you it's ready to publish)
+  # api = upload, then create the episode automatically through the Libsyn API
+  mode: ftp
+  publish_as_draft: true      # api mode: start as drafts; set false once you trust it
+
+  # Monthly upload limit of your Libsyn plan, in MB (see Libsyn > account/plan).
+  # castsync never uploads past it: anything that won't fit waits and goes up
+  # automatically after the quota resets on the 1st. Remove the line for no limit.
+  monthly_limit_mb: 324
+  quota_safety_mb: 5          # keep this much spare
+  quota_reset_day: 1          # Libsyn resets on the 1st of the month
+  quota_reset_delay_hours: 6  # wait until 6 AM on reset day, in case Libsyn resets in a later time zone
+  count_feed_uploads: true    # also count episodes you uploaded by hand (from the RSS feed)
+  quota_already_used_mb: 0    # add usage castsync can't see (e.g. unpublished uploads)
+
+  ftp:
+    host: ftp.libsyn.com
+    username: ${LIBSYN_USER}
+    password: ${LIBSYN_PASSWORD}
+    tls: false
+    #directory: ""
+
+  api:
+    client_id: ${LIBSYN_API_CLIENT_ID}     # request API access from Libsyn support
+    client_secret: ${LIBSYN_API_CLIENT_SECRET}
+    username: ${LIBSYN_USER}
+    password: ${LIBSYN_PASSWORD}
+    show_id: 123456
+    # How the uploaded FTP file is attached to the new post. Check these two
+    # against the "Posts > Primary Content" section of Libsyn's API docs.
+    primary_content_field: primary_content_url
+    primary_content_template: "libsyn-ftp-{content_id}"
+    release_date_format: "%Y-%m-%d %H:%M:%S"
+    extra_fields: {}           # any other /post form fields, e.g. item_subtitle: "..."
+
+# --- Transistor.fm (used when destination: transistor) ---------------------------
+transistor:
+  api_key: ${TRANSISTOR_API_KEY}   # Transistor dashboard > Account > API Access
+  show_id: 12345                   # run `castsync shows` to list your shows and ids
+  publish: published               # published = go live right away | draft = review first
+  # Episode number shown as "#..." in Transistor:
+  #   date = air date as YYYYMMDD, e.g. 20261102, so episodes sort in airing order (default)
+  #   none = don't set one | or a digits-only format like "{date:%y%m%d}"
+  episode_number: date
+  # Season: leave = Transistor's show default (default) | year = e.g. 2026 | or a number
+  season: leave
+  # Bulk work (renumber, retitle, catching up on many episodes) is done in batches:
+  # after this many Transistor requests, castsync waits before the next batch.
+  batch_size: 10              # 0 = no batch pauses
+  batch_pause_seconds: 30
+  extra_fields: {}                 # optional episode fields, e.g. season: 3, type: full
+  # Transistor has no upload/storage limit. Set this only if you want a self-imposed cap:
+  #monthly_limit_mb: 2000
+
+# --- Report email (sent only when castsync did something or hit a problem) -----
+# Works with any SMTP server. Pick a preset or use "custom" and fill in the server.
+#   zoho      smtp.zoho.com     465 ssl   (Zoho personal + free organization accounts)
+#   zoho_pro  smtppro.zoho.com  465 ssl   (Zoho paid plans with your own domain)
+#   gmail     smtp.gmail.com    587 starttls
+#   custom    set smtp_host / smtp_port / security yourself
+# Anything you set below overrides the preset (e.g. a Zoho account in the EU:
+# provider: zoho + smtp_host: smtp.zoho.eu).
+email:
+  provider: zoho
+  #smtp_host: smtp.zoho.com
+  #smtp_port: 465              # 465 -> ssl, 587 -> starttls (inferred if security is omitted)
+  #security: ssl               # ssl | starttls | none
+  username: ${SMTP_USER}        # full email address; leave empty for a no-login local relay
+  password: ${SMTP_PASSWORD}    # app-specific password if the account uses two-factor sign-in
+  #from: ${SMTP_USER}          # defaults to username; Zoho requires your address or an alias
+  from_name: "castsync"
+  #verify_tls: true            # set false only for a self-hosted server with a self-signed cert
+  to:
+    - you@yourdomain.com
