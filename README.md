@@ -1,6 +1,7 @@
 <img width="408" height="360" alt="CASTSYNC" src="https://github.com/user-attachments/assets/35fa7f69-aba2-411b-9ec5-dc5744ed3a11" />
 
 # CastSync
+
 castsync runs hourly on a Linux box. It finds live streams that have finished (from Restream, or straight from YouTube, Twitch or Facebook) and checks whether each one is already an episode on your podcast host. Any that are missing get turned into a loudness-normalized, ID3-tagged MP3 and posted to the host you choose: **Libsyn** or **Transistor.fm**. You get an email whenever it does something or something goes wrong. Hours with nothing to do stay silent.
 
 ## How it works
@@ -68,7 +69,8 @@ Changes to Transistor go out in batches of 10 with a 30-second pause between bat
 
 | Command | What it does |
 |---|---|
-| `castsync retry KEY` | Try a failed stream again on the next run. |
+| `castsync retry KEY` | Try a failed stream again on the next run, with a fresh set of tries. |
+| `castsync retry --all` | Do that for **every** failed stream, including ones that gave up after `max_attempts`. Lists what it reset. |
 | `castsync allow KEY` | Post it on the next run even though it looked like a duplicate (e.g. two shows on the same day). |
 | `castsync ignore KEY` | Never post this stream. |
 
@@ -371,9 +373,21 @@ With a stream titled "PTR Radio (11/2/2026) - we're sooo tired", that gives **PT
 | `{short_date}` | `11/2/2026` |
 | `{pretty_date}` | `November 2, 2026` |
 | `{date}` | `2026-11-02` |
+| `{yyyymmdd}` | `20261102` (same format as the date-based episode number) |
 | `{date:FORMAT}` | Any date format, e.g. `{date:%m/%d/%y}` gives `11/02/26`, `{date:%b %-d}` gives `Nov 2`, `{date:%A}` gives `Monday` |
 
 Dates are the day the stream aired. A misspelled placeholder stops the run before anything is downloaded and lists the valid ones; `castsync check-config` catches it too.
+
+**MP3 file names.** `episode.filename_template` works the same way:
+
+```yaml
+episode:
+  filename_template: "{yyyymmdd}-{show}-{topic}.mp3"   # -> 20261102-PTR-Radio-we're-sooo-tired.mp3
+```
+
+- **Placeholders:** every placeholder above, plus `{slug}` (the episode title in lower-case-with-dashes) and `{episode_title}` (the finished episode name).
+- **No spaces:** spaces become hyphens, and so do characters a file name can't contain (like the `/` in `11/2/2026`). Repeated hyphens are merged into one.
+- **The extension:** `.mp3` is added if you leave it off.
 
 Use `{topic}`, not `{title}`, when your template adds the show name or date itself. `{title}` already contains them, which is how "PTR Radio November 2, 2026 - PTR Radio (11/2/2026) - …" happens.
 
@@ -596,7 +610,7 @@ The same rule works within a single run. If your Twitch and YouTube copies of on
 
 ## Safety limits
 
-`lookback_days` (7), `max_episodes_per_run` (2, newest first), `monthly_limit_mb` (Libsyn plan limit), `max_attempts` (3, after which you get an email saying it gave up). These keep the first run from uploading your whole back catalog and, on Libsyn, keep you inside your plan. All commands are listed in the [Command summary](#command-summary).
+`lookback_days` (7), `max_episodes_per_run` (2, newest first), `monthly_limit_mb` (Libsyn plan limit), `max_attempts` (3, after which you get an email saying it gave up; `castsync retry KEY` or `castsync retry --all` gives streams a fresh set of tries). These keep the first run from uploading your whole back catalog and, on Libsyn, keep you inside your plan. All commands are listed in the [Command summary](#command-summary).
 
 ## Run without systemd
 

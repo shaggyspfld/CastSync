@@ -892,6 +892,63 @@ class NumberingTests(unittest.TestCase):
         self.assertNotIn("episode[season]", fake.created[0])
 
 
+class FilenameTemplateTests(unittest.TestCase):
+    def test_title_placeholders_work_in_filename_and_are_file_safe(self):
+        tmp = Path(tempfile.mkdtemp())
+        cfg = make_cfg(tmp, general={"show_name": "PTR Radio"},
+                       episode={"title_template": "{show} ({short_date}) - {topic}",
+                                "filename_template": "{short_date} - {topic}.mp3"})
+        src = tone(str(tmp / "a.m4a"), seconds=3)
+        from datetime import datetime
+        ts = int(datetime(2026, 8, 5, 18, 0).timestamp())
+
+        def fetch(w):
+            d = os.path.join(w, "a.m4a"); subprocess.run(["cp", src, d], check=True); return d
+        c = Candidate(key="restream:u", source="restream",
+                      title="PTR Radio (8/5/2026) - Happy NAtional Underwear Day",
+                      started_at=ts, finished_at=ts + 3600, fetch_audio=fetch)
+        uploaded = []
+        with mock.patch.object(runner, "existing_items", return_value=[]), \
+             mock.patch.object(runner, "gather", return_value=[c]), \
+             mock.patch.object(LibsynPublisher, "ftp_upload",
+                               side_effect=lambda p: uploaded.append(os.path.basename(p)) or "x"):
+            rep = runner.run(cfg)
+        self.assertEqual(rep.failed, [], rep.text())
+        self.assertEqual(uploaded, ["8-5-2026-Happy-NAtional-Underwear-Day.mp3"])
+
+    def test_users_format_no_spaces(self):
+        from castsync.titles import render_filename
+        from datetime import datetime
+        cfg = Config(raw={"general": {"show_name": "PTR Radio"},
+                          "episode": {"filename_template": "{yyyymmdd}-{show}-{topic}.mp3"}}, path=Path("c"))
+        ts = int(datetime(2026, 11, 2, 18).timestamp())
+        name = render_filename(cfg, "PTR Radio (11/2/2026) - we're sooo tired", ts, "x")
+        self.assertEqual(name, "20261102-PTR-Radio-we're-sooo-tired.mp3")
+        self.assertNotIn(" ", name)
+        self.assertEqual(render_filename(cfg, "PTR Radio (11/2/2026)", ts, "x"), "20261102-PTR-Radio.mp3")
+
+    def test_yyyymmdd_in_title_too(self):
+        from castsync.titles import render_title
+        from datetime import datetime
+        cfg = Config(raw={"episode": {"title_template": "#{yyyymmdd} {topic}"}}, path=Path("c"))
+        self.assertEqual(render_title(cfg, "Show - topic", int(datetime(2026, 1, 9, 12).timestamp())),
+                         "#20260109 Show - topic")
+
+    def test_bad_filename_placeholder_stops_before_download(self):
+        tmp = Path(tempfile.mkdtemp())
+        cfg = make_cfg(tmp, episode={"filename_template": "{shortdate}.mp3"})
+        with mock.patch.object(runner, "gather") as g:
+            rep = runner.run(cfg)
+        g.assert_not_called()
+        self.assertIn("episode.filename_template uses {shortdate}", rep.errors[0])
+        self.assertIn("{short_date}", rep.errors[0])
+
+    def test_extension_added_and_unsafe_chars_removed(self):
+        from castsync.titles import render_filename
+        cfg = Config(raw={"episode": {"filename_template": 'A/B:C*"{topic}"?'}}, path=Path("c"))
+        self.assertEqual(render_filename(cfg, "Show - x|y", 0, "t"), "A-B-C-Show-x-y.mp3")
+
+
 class RetitleTests(unittest.TestCase):
     def test_retitle_preview_then_apply(self):
         from castsync import cli
@@ -1017,6 +1074,47 @@ class BatchPauseTests(unittest.TestCase):
         self.assertAlmostEqual(estimate_seconds(cfg, 10), 10 * 1.05)
         from castsync.cli import _duration
         self.assertEqual(_duration(86.25), "1 min 26 s")
+
+
+class RetryAllTests(unittest.TestCase):
+    def test_retry_all_resets_gave_up_streams_and_they_run_again(self):
+        from castsync import cli
+        import io, contextlib
+        tmp = Path(tempfile.mkdtemp())
+        cfg = make_cfg(tmp, general={"max_episodes_per_run": 5})
+        st = State(cfg.state_dir)
+        now = time.time()
+        for k in ("a", "b"):
+            for _ in range(3):
+                st.record(f"restream:{k}", "restream", f"Show {k}", f"show {k}", int(now - 86400),
+                          "failed", detail="'short_date'", bump_attempt=True)
+        st.record("restream:c", "restream", "Show c", "show c", int(now - 86400), "failed",
+                  bump_attempt=True)                                   # 1 try so far
+        st.record("restream:ok", "restream", "Done", "done", int(now), "published")
+        # before: gave-up streams are skipped
+        cands = [Candidate(key=f"restream:{k}", source="restream", title=f"Show {k}",
+                           started_at=int(now - (i + 1) * 86400), finished_at=int(now - 80000),
+                           fetch_audio=lambda w: None, urls=[])
+                 for i, k in enumerate("abc")]
+        todo, _ = runner.select(cfg, cands, ExistingIndex(), st, now)
+        self.assertEqual([c.key for c in todo], ["restream:c"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli.main(["-c", str(tmp / "nope.yaml"), "retry", "--all"]) if False else \
+                cli.cmd_retry_all(cfg, mock.Mock())
+        self.assertEqual(rc, 0)
+        self.assertIn("3 stream(s) reset (2 had given up)", out.getvalue())
+        self.assertNotIn("restream:ok", out.getvalue())
+        todo, _ = runner.select(cfg, cands, ExistingIndex(), State(cfg.state_dir), now)
+        self.assertEqual(sorted(c.key for c in todo), ["restream:a", "restream:b", "restream:c"])
+
+    def test_retry_needs_key_or_all(self):
+        from castsync import cli
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "c.yaml").write_text(f"general:\n  state_dir: {tmp}/s\n")
+        with self.assertRaises(SystemExit):
+            cli.main(["-c", str(tmp / "c.yaml"), "retry"])
+        self.assertEqual(cli.main(["-c", str(tmp / "c.yaml"), "retry", "--all"]), 0)
 
 
 class RenumberTests(unittest.TestCase):

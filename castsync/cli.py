@@ -10,6 +10,7 @@
   castsync renumber [--apply]                        set episode number/season on EVERY episode
                                                      of the Transistor show (not just castsync's)
   castsync retry KEY | ignore KEY                    manage a specific stream
+  castsync retry --all                               retry every failed stream (incl. gave up)
   castsync allow KEY                                 upload it even though it looks like a duplicate
   castsync test-email                                send a test report
   castsync uninstall [--purge|--keep-data] [--yes]   remove castsync (asks about your data)
@@ -108,13 +109,34 @@ def cmd_set(cfg, args, status):
     return 0
 
 
+def cmd_retry_all(cfg, args):
+    """Reset the try count of every failed stream so the next run tries them again."""
+    st = State(cfg.state_dir)
+    max_attempts = int(cfg.get("general.max_attempts", 3))
+    rows = [r for r in st.rows_with_status("failed")] + [
+        r for r in st.rows_with_status("allowed") if r["attempts"]]
+    if not rows:
+        print("No failed streams to retry.")
+        return 0
+    gave_up = sum(1 for r in rows if r["attempts"] >= max_attempts)
+    for r in sorted(rows, key=lambda r: r["started_at"] or 0, reverse=True):
+        mark = "gave up" if r["attempts"] >= max_attempts else f"{r['attempts']} tr{'y' if r['attempts'] == 1 else 'ies'}"
+        print(f"  {r['key']:<44} {r['title'][:60]}  ({mark})")
+        st.db.execute("UPDATE episodes SET attempts=0 WHERE key=?", (r["key"],))
+    st.db.commit()
+    print(f"\n{len(rows)} stream(s) reset ({gave_up} had given up). They'll be tried again on the "
+          f"next run, newest first, {cfg.get('general.max_episodes_per_run', 2)} per run.\n"
+          "Run `castsync run` to start now instead of waiting for the hourly timer.")
+    return 0
+
+
 def cmd_check_config(cfg, args):
     """Config parsed fine if we got here; also check the values that matter."""
     from .audio import audio_settings
     from .destinations import check_settings, dest_name
     from .files import keep_policy
     from .models import download_order
-    from .titles import check_template
+    from .titles import check_filename_template, check_template
     from .report import smtp_settings
     problems = []
     for label, fn in (("destination", check_settings), ("audio", audio_settings),
@@ -126,7 +148,8 @@ def cmd_check_config(cfg, args):
                        lambda c: __import__("castsync.transistor", fromlist=["x"])
                        .episode_numbering(c, None) if c.get("destination") == "transistor" else None),
                       ("title_template",
-                       lambda c: check_template(c.get("episode.title_template", "{title}")))):
+                       lambda c: check_template(c.get("episode.title_template", "{title}"))),
+                      ("filename_template", check_filename_template)):
         try:
             fn(cfg)
         except Exception as e:
@@ -411,7 +434,12 @@ def main(argv=None):
     s.add_argument("--limit", type=int, default=25)
     for name in ("retry", "ignore", "allow"):
         x = sub.add_parser(name, help=f"{name} a stream by key")
-        x.add_argument("key")
+        if name == "retry":
+            x.add_argument("key", nargs="?", help="stream key from `castsync status`")
+            x.add_argument("--all", action="store_true",
+                           help="retry every stream that failed, including ones that gave up")
+        else:
+            x.add_argument("key")
     sub.add_parser("test-email")
     sub.add_parser("shows", help="list Transistor shows and their ids")
     sub.add_parser("check-config", help="check config.yaml for mistakes")
@@ -446,6 +474,10 @@ def main(argv=None):
     if args.cmd == "status":
         return cmd_status(cfg, args)
     if args.cmd == "retry":
+        if args.all:
+            return cmd_retry_all(cfg, args)
+        if not args.key:
+            p.error("retry needs a KEY, or --all")
         return cmd_set(cfg, args, "failed")
     if args.cmd == "ignore":
         return cmd_set(cfg, args, "ignored")

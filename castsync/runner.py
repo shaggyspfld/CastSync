@@ -21,7 +21,7 @@ from .platforms import download_audio_with_ytdlp, scan_platforms
 from .report import Report
 from .restream import restream_candidates
 from .state import State
-from .titles import check_template, render_title
+from .titles import check_filename_template, check_template, render_filename, render_title
 
 log = logging.getLogger(__name__)
 
@@ -148,9 +148,7 @@ def process(cfg, c: Candidate, publisher, work_root: str,
         raise RuntimeError(f"Audio only {dur/60:.1f} min long; below min_duration_minutes")
 
     date = datetime.fromtimestamp(c.started_at).strftime("%Y-%m-%d") if c.started_at else ""
-    fname = (cfg.get("episode.filename_template", "{date}-{slug}.mp3")
-             .format(date=date or "undated", slug=re.sub(r"[^a-z0-9]+", "-",
-                     normalize_title(title))[:60].strip("-")))
+    fname = render_filename(cfg, c.title, c.started_at, title)
     mp3 = os.path.join(conv_dir, fname)
     to_mp3(src, mp3, cfg, title=title, artist=cfg.get("episode.artist", ""),
            album=cfg.get("general.show_name", ""), date=date)
@@ -243,6 +241,7 @@ def run(cfg, dry_run=False, no_upload=False, force=False) -> Report:
         check_settings(cfg)
         download_order(cfg)
         check_template(cfg.get("episode.title_template", "{title}"))
+        check_filename_template(cfg)
         if dest_key(cfg) == "transistor":
             from .transistor import episode_numbering
             episode_numbering(cfg, None)
