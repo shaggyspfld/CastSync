@@ -1,5 +1,5 @@
+<img width="408" height="360" alt="CASTSYNC" src="https://github.com/user-attachments/assets/35fa7f69-aba2-411b-9ec5-dc5744ed3a11" />
 # CastSync
-
 castsync runs hourly on a Linux box. It finds live streams that have finished (from Restream, or straight from YouTube, Twitch or Facebook) and checks whether each one is already an episode on your podcast host. Any that are missing get turned into a loudness-normalized, ID3-tagged MP3 and posted to the host you choose: **Libsyn** or **Transistor.fm**. You get an email whenever it does something or something goes wrong. Hours with nothing to do stay silent.
 
 ## How it works
