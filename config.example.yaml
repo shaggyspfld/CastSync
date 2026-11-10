@@ -75,6 +75,7 @@ episode:
   #   {stream_title} the whole stream title, untouched
   #   {show}         general.show_name
   #   {short_date}   11/2/2026     {pretty_date} November 2, 2026     {date} 2026-11-02
+  #   {yyyymmdd}     20261102 (same format as the date-based episode number)
   #   {date:FORMAT}  any date format, e.g. {date:%m/%d/%y} -> 11/02/26, {date:%b %-d} -> Nov 2
   # Dates are the day the stream aired. Example:
   #   title_template: "{show} ({short_date}) - {topic}"  ->  PTR Radio (11/2/2026) - we're sooo tired
@@ -83,7 +84,11 @@ episode:
   strip_from_title:           # regexes removed from the stream title
     - "\\s*\\|\\s*LIVE\\s*$"
     - "🔴"
-  filename_template: "{date}-{slug}.mp3"
+  # MP3 file name: any placeholder above, plus {slug} (episode title as lower-case-dashes)
+  # and {episode_title}. Spaces and characters not allowed in file names (like the / in
+  # 11/2/2026) become "-". ".mp3" is added if missing. Example result:
+  #   20261102-PTR-Radio-we're-sooo-tired.mp3
+  filename_template: "{yyyymmdd}-{show}-{topic}.mp3"
   artist: "My Podcast"
   description_footer: ""
 
