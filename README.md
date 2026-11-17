@@ -4,6 +4,8 @@
 
 castsync runs hourly on a Linux box. It finds live streams that have finished (from Restream, or straight from YouTube, Twitch or Facebook) and checks whether each one is already an episode on your podcast host. Any that are missing get turned into a loudness-normalized, ID3-tagged MP3 and posted to the host you choose: **Libsyn** or **Transistor.fm**. You get an email whenever it does something or something goes wrong. Hours with nothing to do stay silent.
 
+**Optional:** it can also save each finished YouTube stream's captions to a folder for the P.T.R. Radio movie site, which uses them to play each movie review from where it starts. It's off unless you turn it on; see [Captions for the movie site](#captions-for-the-movie-site).
+
 ## How it works
 
 ```
@@ -23,6 +25,8 @@ hourly systemd timer
        5. ffmpeg → MP3 (default 64 kbps, 44.1 kHz, mono; -16 LUFS; ID3 tags)
        6. Post it: Transistor → upload + create + publish (fully automatic)
                    Libsyn     → FTP dropbox (or full API mode on Libsyn's top plans)
+       6b. Optional (captions.enabled): save this run's YouTube streams' captions
+          (<id>.vtt + <id>.json) to captions.folder for the movie site
        7. Email + save a report in ~/.local/share/castsync/reports/
 ```
 
