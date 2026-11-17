@@ -1303,5 +1303,127 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(form["show_id"], (None, "77"))
 
 
+VTT = b"WEBVTT\nKind: captions\nLanguage: en\n\n00:47:10.000 --> 00:47:12.000\nroad house\n"
+
+
+def yt_info(vid="aqz-KE-bpKQ", manual=None, auto=None, started=None, dur=5400, live="was_live", lang="en"):
+    return {"id": vid, "title": "PTR Live", "timestamp": started or int(time.time() - 3 * 86400),
+            "duration": dur, "live_status": live, "language": lang,
+            "subtitles": manual or {}, "automatic_captions": auto or {}}
+
+
+def track(lang, ext="vtt"):
+    return [{"ext": "json3", "url": f"https://x.test/{lang}.json3"}, {"ext": ext, "url": f"https://x.test/{lang}.{ext}"}]
+
+
+class CaptionTests(unittest.TestCase):
+    def setUp(self):
+        from castsync import captions
+        self.cap = captions
+        self.tmp = Path(tempfile.mkdtemp())
+        self.folder = self.tmp / "share"
+        self.folder.mkdir()
+        self.cfg = make_cfg(self.tmp, captions={"enabled": True, "folder": str(self.folder)})
+        self.state = State(self.cfg.state_dir)
+
+    def run_export(self, videos, info, text=lambda u: VTT, **kw):
+        return self.cap.export(self.cfg, self.state.db, videos, info_fn=lambda u: info, text_fn=text, **kw)
+
+    def test_youtube_id_from_link_shapes(self):
+        for u in ["https://www.youtube.com/watch?v=aqz-KE-bpKQ&t=5", "https://youtu.be/aqz-KE-bpKQ",
+                  "https://www.youtube.com/live/aqz-KE-bpKQ?si=x", "https://m.youtube.com/watch?feature=x&v=aqz-KE-bpKQ"]:
+            self.assertEqual(self.cap.youtube_id(u), "aqz-KE-bpKQ", u)
+        self.assertIsNone(self.cap.youtube_id("https://www.twitch.tv/videos/123"))
+        self.assertIsNone(self.cap.youtube_id("https://www.youtube.com/@show/streams"))
+
+    def test_prefers_hosts_captions_then_original_auto_track(self):
+        info = yt_info(manual={"en": track("en"), "live_chat": track("chat")},
+                       auto={"en": track("auto-en"), "en-orig": track("auto-orig")})
+        self.assertEqual(self.cap.pick_track(info, ["en"]), ("manual", "en", "https://x.test/en.vtt"))
+        info = yt_info(auto={"de": track("de"), "en": track("auto-en"), "en-orig": track("auto-orig")})
+        self.assertEqual(self.cap.pick_track(info, ["en"]), ("auto", "en-orig", "https://x.test/auto-orig.vtt"))
+        self.assertIsNone(self.cap.pick_track(yt_info(auto={"en": track("en", ext="srv3")}), ["en"]))
+
+    def test_exports_vtt_and_manifest_once(self):
+        v = [{"id": "aqz-KE-bpKQ", "title": "x", "started_at": None, "duration_s": None, "url": ""}]
+        done = self.run_export(v, yt_info(auto={"en-orig": track("en-orig")}))
+        self.assertEqual([d["status"] for d in done], ["exported"])
+        self.assertEqual((self.folder / "aqz-KE-bpKQ.vtt").read_bytes(), VTT)
+        import json
+        m = json.loads((self.folder / "aqz-KE-bpKQ.json").read_text())
+        self.assertEqual((m["id"], m["title"], m["captions"], m["language"], m["duration_s"]),
+                         ("aqz-KE-bpKQ", "PTR Live", "auto", "en-orig", 5400))
+        self.assertTrue(m["started_at"].endswith("Z"))
+        self.assertEqual([p.name for p in self.folder.iterdir() if p.name.startswith(".")], [])  # no temp files left
+        self.assertEqual(self.run_export(v, yt_info(auto={"en": track("en")})), [])  # already there
+
+    def test_waits_for_late_captions_then_gives_up(self):
+        v = [{"id": "aqz-KE-bpKQ", "title": "x", "started_at": None, "duration_s": None, "url": ""}]
+        recent = yt_info(started=int(time.time() - 2 * 3600))
+        self.assertEqual(self.run_export(v, recent)[0]["status"], "waiting")
+        self.assertTrue((self.folder / "aqz-KE-bpKQ.json").exists())   # the site sees the episode already
+        self.assertFalse((self.folder / "aqz-KE-bpKQ.vtt").exists())
+        self.assertEqual(self.run_export(v, recent), [])                 # not again within the hour
+        self.assertEqual(self.run_export(v, recent, now=time.time() + 3600)[0]["status"], "waiting")
+        old = yt_info(started=int(time.time() - 5 * 86400))
+        self.assertEqual(self.run_export(v, old, now=time.time() + 7200)[0]["status"], "none")
+        self.assertEqual(self.run_export(v, old, now=time.time() + 99999), [])
+
+    def test_skips_short_and_live_and_caps_per_run(self):
+        short = [{"id": "aaaaaaaaaaa", "title": "clip", "started_at": None, "duration_s": 60, "url": ""}]
+        self.assertEqual(self.run_export(short, yt_info()), [])
+        live = [{"id": "bbbbbbbbbbb", "title": "now", "started_at": None, "duration_s": None, "url": ""}]
+        self.assertEqual(self.run_export(live, yt_info(live="is_live"))[0]["status"], "waiting")
+        many = [{"id": f"vid{i:08d}", "title": "", "started_at": None, "duration_s": None, "url": ""} for i in range(15)]
+        self.assertEqual(len(self.run_export(many, yt_info(auto={"en": track("en")}))), 10)
+
+    def test_failures_retry_then_give_up(self):
+        v = [{"id": "aqz-KE-bpKQ", "title": "x", "started_at": None, "duration_s": None, "url": ""}]
+        def boom(u):
+            raise RuntimeError("Sign in to confirm you're not a bot")
+        t = time.time()
+        statuses = [self.run_export(v, yt_info(auto={"en": track("en")}), text=boom, now=t + i * 3600)[0]["status"]
+                    for i in range(5)]
+        self.assertEqual(statuses, ["failed"] * 4 + ["gave_up"])
+        self.assertEqual(self.run_export(v, yt_info(auto={"en": track("en")}), now=t + 9 * 3600), [])
+        not_vtt = self.run_export([{"id": "ccccccccccc", "title": "", "started_at": None, "duration_s": None, "url": ""}],
+                                  yt_info(auto={"en": track("en")}), text=lambda u: b"<html>")
+        self.assertEqual(not_vtt[0]["status"], "failed")
+
+    def test_refuses_unmounted_share(self):
+        cfg = make_cfg(self.tmp, captions={"enabled": True, "folder": str(self.folder),
+                                           "marker_file": "PTR-CAPTIONS-SHARE.txt"})
+        v = [{"id": "aqz-KE-bpKQ", "title": "x", "started_at": None, "duration_s": None, "url": ""}]
+        with self.assertRaises(RuntimeError):
+            self.cap.export(cfg, self.state.db, v, info_fn=lambda u: yt_info(), text_fn=lambda u: VTT)
+        (self.folder / "PTR-CAPTIONS-SHARE.txt").write_text("x")
+        self.assertEqual(len(self.cap.export(cfg, self.state.db, v, info_fn=lambda u: yt_info(auto={"en": track("en")}),
+                                             text_fn=lambda u: VTT)), 1)
+        missing = make_cfg(self.tmp, captions={"enabled": True, "folder": str(self.tmp / "nope")})
+        with self.assertRaises(RuntimeError):
+            self.cap.export(missing, self.state.db, v, info_fn=lambda u: yt_info(), text_fn=lambda u: VTT)
+
+    def test_needs_folder_when_enabled(self):
+        with self.assertRaises(ValueError):
+            self.cap.settings(make_cfg(self.tmp, captions={"enabled": True}))
+
+    def test_hourly_run_exports_captions_for_its_streams(self):
+        now = time.time()
+        cands = [Candidate(key="youtube:aqz-KE-bpKQ", source="youtube", title="PTR Live 11/16",
+                           started_at=int(now - 5 * 3600), finished_at=int(now - 3 * 3600), duration_s=7200,
+                           urls=["https://www.youtube.com/watch?v=aqz-KE-bpKQ"])]
+        cfg = make_cfg(self.tmp, captions={"enabled": True, "folder": str(self.folder)},
+                       general={"max_episodes_per_run": 0})
+        with mock.patch.object(runner, "existing_items", return_value=[]), \
+             mock.patch.object(runner, "gather", return_value=cands), \
+             mock.patch.object(self.cap, "fetch_info", return_value=yt_info(auto={"en": track("en")})), \
+             mock.patch.object(self.cap, "fetch_text", return_value=VTT):
+            rep = runner.run(cfg)
+        self.assertTrue((self.folder / "aqz-KE-bpKQ.vtt").exists(), rep.text())
+        self.assertTrue(rep.did_work)
+        self.assertIn("1 caption file(s) saved", rep.subject("Show"))
+        self.assertIn("CAPTIONS (for the movie site):", rep.text())
+
+
 if __name__ == "__main__":
     unittest.main()

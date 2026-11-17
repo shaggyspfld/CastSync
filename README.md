@@ -4,6 +4,8 @@
 
 castsync runs hourly on a Linux box. It finds live streams that have finished (from Restream, or straight from YouTube, Twitch or Facebook) and checks whether each one is already an episode on your podcast host. Any that are missing get turned into a loudness-normalized, ID3-tagged MP3 and posted to the host you choose: **Libsyn** or **Transistor.fm**. You get an email whenever it does something or something goes wrong. Hours with nothing to do stay silent.
 
+**Optional:** it can also save each finished YouTube stream's captions to a folder for the P.T.R. Radio movie site, which uses them to play each movie review from where it starts. It's off unless you turn it on; see [Captions for the movie site](#captions-for-the-movie-site).
+
 ## How it works
 
 ```
@@ -23,6 +25,8 @@ hourly systemd timer
        5. ffmpeg → MP3 (default 64 kbps, 44.1 kHz, mono; -16 LUFS; ID3 tags)
        6. Post it: Transistor → upload + create + publish (fully automatic)
                    Libsyn     → FTP dropbox (or full API mode on Libsyn's top plans)
+       6b. Optional (captions.enabled): save this run's YouTube streams' captions
+          (<id>.vtt + <id>.json) to captions.folder for the movie site
        7. Email + save a report in ~/.local/share/castsync/reports/
 ```
 
@@ -53,6 +57,7 @@ Run any of these from any folder. Commands that change something on your podcast
 | `castsync auth restream` | One-time Restream sign-in in your browser. |
 | `castsync auth libsyn` | One-time Libsyn API sign-in (only for `libsyn.mode: api`). |
 | `castsync shows` | List your Transistor shows and their IDs, for `transistor.show_id`. |
+| `castsync captions` | Save captions of the channel's past streams for the movie site (see [Captions for the movie site](#captions-for-the-movie-site)). `--dry-run`, `--limit N`, `--status`. |
 
 **Fixing things on Transistor**
 
@@ -323,6 +328,61 @@ castsync-uninstall
 | Timer only runs while you're logged in | `sudo loginctl enable-linger $USER`. Check with `loginctl show-user $USER -p Linger` (should say `yes`). |
 | YouTube downloads start failing | Usually fixed by a yt-dlp update. The daily updater does this automatically, or run `~/.local/share/castsync/venv/bin/pip install -U yt-dlp`. |
 | FTP upload to Libsyn times out | Zorin's firewall is off by default and outgoing connections are allowed. If you turned on `ufw` or use a VPN, allow outgoing FTP or try `libsyn.ftp.tls: true`. |
+
+## Captions for the movie site
+
+castsync can also save the captions of each finished YouTube stream for the P.T.R. Radio movie site ([movies.ptrradio.com](https://github.com/shaggyspfld/PTR-Movie-Review)). The site reads them to find where each movie review starts and plays the episode from there. It's off unless you turn it on, and it doesn't affect podcast uploads.
+
+**What it does.** Each hourly run looks at the YouTube streams it found. For each one longer than 30 minutes, it writes two files into a folder:
+
+| File | What's in it |
+|---|---|
+| `<video id>.vtt` | The captions. The hosts' own captions if there are any, otherwise YouTube's automatic ones. |
+| `<video id>.json` | The video's title, link, start time and length, and which captions were used. |
+
+YouTube often makes automatic captions a few hours after a stream ends. Until then only the `.json` is written, and castsync checks again every hour for up to `retry_hours` (48). Each file is written to a temporary name first and then renamed, so the site never reads half a file. Captions come through yt-dlp, the same as the audio, so you don't need a YouTube API key or sign-in.
+
+### 1. Mount the share from the Windows server
+
+On the Windows server, `9-Connect-YouTube.ps1 -FromCastSync` creates the share and prints the exact lines to use here (see the movie site's DEPLOY-IIS.md, "Review clips from YouTube"). On this computer:
+
+```bash
+sudo apt install cifs-utils
+sudo mkdir -p /mnt/ptr-captions
+sudo nano /etc/ptr-captions.cred        # two lines: username=castsync  and  password=<from the script>
+sudo chmod 600 /etc/ptr-captions.cred
+echo "//<server IP>/PtrCaptions /mnt/ptr-captions cifs credentials=/etc/ptr-captions.cred,uid=$(id -u),gid=$(id -g),vers=3.1.1,seal,_netdev,nofail,x-systemd.automount 0 0" | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload && ls /mnt/ptr-captions     # should list PTR-CAPTIONS-SHARE.txt
+```
+
+`seal` encrypts the connection, and `x-systemd.automount` reconnects if the server restarts. Run the `echo` line as your normal user (with `sudo` only inside it), so `$(id -u)` is the account castsync runs as.
+
+### 2. Turn it on in config.yaml
+
+```yaml
+captions:
+  enabled: true
+  folder: /mnt/ptr-captions
+  marker_file: PTR-CAPTIONS-SHARE.txt
+```
+
+castsync writes only when `PTR-CAPTIONS-SHARE.txt` is in the folder. If the share isn't mounted, the run reports a problem instead of filling a local folder. It never creates the folder itself.
+
+The other settings, all optional, are in `config.example.yaml`: `languages`, `min_duration_minutes`, `retry_hours` and `max_per_run`.
+
+### 3. Fill in the back catalog
+
+The hourly run only sees recent streams. To save the captions of everything already on the channel:
+
+```bash
+castsync captions --dry-run      # list what it would fetch
+castsync captions                # fetch up to 50; run it again until it says nothing is left
+castsync captions --status       # saved / waiting / none / failed, and the latest videos
+```
+
+It lists the channels in `captions.channels`, or if that's empty, the YouTube entries in `platforms.channels` (for example `https://www.youtube.com/@YourChannel/streams`).
+
+**If YouTube refuses** ("Sign in to confirm you're not a bot"), set `platforms.cookies_file` as for audio downloads. A failed video is tried again on the next 4 runs, then left out (`castsync captions --status` shows it as failed).
 
 ## Install (any Linux)
 

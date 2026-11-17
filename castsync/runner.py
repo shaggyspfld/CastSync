@@ -11,6 +11,7 @@ import shutil
 import time
 from datetime import datetime
 
+from . import captions
 from .audio import audio_settings, describe, probe_duration, to_mp3
 from .files import episode_dirs, expire, finalize, keep_policy
 from .destinations import check_settings, dest_key, dest_name, existing_items, make_publisher
@@ -242,6 +243,7 @@ def run(cfg, dry_run=False, no_upload=False, force=False) -> Report:
         download_order(cfg)
         check_template(cfg.get("episode.title_template", "{title}"))
         check_filename_template(cfg)
+        captions.settings(cfg)
         if dest_key(cfg) == "transistor":
             from .transistor import episode_numbering
             episode_numbering(cfg, None)
@@ -347,6 +349,13 @@ def run(cfg, dry_run=False, no_upload=False, force=False) -> Report:
                 if kept["originals"]:
                     res["original"] = kept["originals"][0]
     report.waiting = len(todo) - visited
+    if captions.enabled(cfg):
+        try:
+            report.captions = captions.export(cfg, state.db, captions.videos_from_candidates(candidates),
+                                              now=now, dry_run=dry_run)
+        except Exception as e:
+            log.exception("Caption export failed")
+            report.errors.append(f"Captions: {e}")
     report.quota_line = quota.summary()
     report.quota_reset = quota.reset_text()
     keep_days = cfg.get("general.keep_days", cfg.get("general.keep_mp3_days", 14))
