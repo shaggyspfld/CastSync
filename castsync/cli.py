@@ -12,6 +12,9 @@
   castsync retry KEY | ignore KEY                    manage a specific stream
   castsync retry --all                               retry every failed stream (incl. gave up)
   castsync allow KEY                                 upload it even though it looks like a duplicate
+  castsync captions [--limit N] [--dry-run]          save captions of the channel's past streams
+                                                     (backfill for the movie site; see captions:)
+  castsync captions --status                         what has been saved so far
   castsync test-email                                send a test report
   castsync uninstall [--purge|--keep-data] [--yes]   remove castsync (asks about your data)
 """
@@ -63,6 +66,57 @@ def cmd_run(cfg, args):
             except Exception as e:
                 logging.error("Could not send report email: %s", e)
     return 1 if (report.failed or report.errors) else 0
+
+
+def cmd_captions(cfg, args):
+    from . import captions
+    try:
+        s = captions.settings(cfg)
+    except ValueError as e:
+        print(f"Settings: {e}")
+        return 2
+    if not s["folder"]:
+        print("Set captions.folder in config.yaml first (and captions.enabled: true for the hourly run).")
+        return 2
+    state = State(cfg.state_dir)
+    st = captions.CaptionState(state.db)
+    if args.status:
+        counts = st.counts()
+        print(f"Folder: {s['folder']}")
+        print("Saved: {exported}  waiting for YouTube: {waiting}  none: {none}  failed: {failed}".format(
+            **{k: counts.get(k, 0) for k in ("exported", "waiting", "none", "failed")}))
+        for r in st.db.execute("SELECT * FROM captions ORDER BY updated_at DESC LIMIT ?", (args.limit or 15,)):
+            print(f"  {r['video_id']}  {r['status']:<8} {r['title'][:50]:<50} {r['detail'] or ''}")
+        return 0
+    lock = open(cfg.state_dir / "castsync.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("A castsync run is going right now; try again in a few minutes.")
+        return 1
+    urls = captions.channels(cfg)
+    if not urls:
+        print("No YouTube channel to list: add one to captions.channels or platforms.channels.")
+        return 2
+    videos = []
+    for u in urls:
+        try:
+            found = captions.list_channel(cfg, u, None)
+        except Exception as e:
+            print(f"Could not list {u}: {e}")
+            return 1
+        print(f"{u}: {len(found)} video(s)")
+        videos += found
+    limit = args.limit or 50
+    done = captions.export(cfg, state.db, videos, dry_run=args.dry_run, limit=limit)
+    for d in done:
+        print(f"  {d['id']}  {d['status']:<9} {d['title'][:50]:<50} {d['message']}")
+    left = 0 if args.dry_run else sum(
+        1 for v in videos
+        if not (v.get("duration_s") and v["duration_s"] < s["min_minutes"] * 60)
+        and captions.due(st, s, v["id"], float("inf")))
+    print(f"{len(done)} video(s) checked" + (f"; {left} still to do: run it again" if left else "") + ".")
+    return 1 if any(d["status"] in ("failed", "gave_up") for d in done) else 0
 
 
 def cmd_auth(cfg, args):
@@ -149,7 +203,8 @@ def cmd_check_config(cfg, args):
                        .episode_numbering(c, None) if c.get("destination") == "transistor" else None),
                       ("title_template",
                        lambda c: check_template(c.get("episode.title_template", "{title}"))),
-                      ("filename_template", check_filename_template)):
+                      ("filename_template", check_filename_template),
+                      ("captions", lambda c: __import__("castsync.captions", fromlist=["x"]).settings(c))):
         try:
             fn(cfg)
         except Exception as e:
@@ -440,6 +495,10 @@ def main(argv=None):
                            help="retry every stream that failed, including ones that gave up")
         else:
             x.add_argument("key")
+    cp = sub.add_parser("captions", help="save captions of past YouTube streams for the movie site")
+    cp.add_argument("--limit", type=int, default=0, help="videos per run (default 50; with --status: rows shown)")
+    cp.add_argument("--dry-run", action="store_true", help="only list what would be fetched")
+    cp.add_argument("--status", action="store_true", help="show what has been saved")
     sub.add_parser("test-email")
     sub.add_parser("shows", help="list Transistor shows and their ids")
     sub.add_parser("check-config", help="check config.yaml for mistakes")
@@ -491,6 +550,8 @@ def main(argv=None):
         return cmd_check_config(cfg, args)
     if args.cmd == "shows":
         return cmd_shows(cfg, args)
+    if args.cmd == "captions":
+        return cmd_captions(cfg, args)
     if args.cmd == "test-email":
         return cmd_test_email(cfg, args)
 

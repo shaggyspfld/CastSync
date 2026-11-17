@@ -24,6 +24,7 @@ class Report:
     waiting: int = 0                                    # left for the next run (per-run cap)
     quota_line: str = ""
     quota_reset: str = ""
+    captions: list[dict] = field(default_factory=list)  # caption export (captions.enabled)
     dest: str = "Libsyn"
     dry_run: bool = False
 
@@ -32,7 +33,15 @@ class Report:
         # A skip because only a *date* matched is emailed once, so a wrong match
         # (e.g. two different shows on the same day) never goes unnoticed.
         return bool(self.published or self.failed or self.errors or self.date_matches
-                    or self.held)
+                    or self.held or self.captions_done or self.captions_gave_up)
+
+    @property
+    def captions_done(self) -> list[dict]:
+        return [c for c in self.captions if c["status"] == "exported"]
+
+    @property
+    def captions_gave_up(self) -> list[dict]:
+        return [c for c in self.captions if c["status"] == "gave_up"]
 
     @property
     def date_matches(self) -> list[dict]:
@@ -50,6 +59,10 @@ class Report:
             bits.append(f"{len(self.date_matches)} held back (date match)")
         if self.held:
             bits.append(f"{len(self.held)} waiting for {self.dest} monthly limit")
+        if self.captions_done:
+            bits.append(f"{len(self.captions_done)} caption file(s) saved")
+        if self.captions_gave_up:
+            bits.append(f"{len(self.captions_gave_up)} caption download(s) failed")
         prefix = "[castsync DRY RUN]" if self.dry_run else "[castsync]"
         return f"{prefix} {show}: " + (", ".join(bits) or "nothing to do")
 
@@ -91,6 +104,11 @@ class Report:
             for s in self.date_matches:
                 lines.append(f"  - {s['title']}: {s['reason']}")
             lines.append("    If that's wrong, run: castsync allow <key>   (keys: castsync status)")
+            lines.append("")
+        if self.captions:
+            lines.append("CAPTIONS (for the movie site):")
+            for c in self.captions:
+                lines.append(f"  - {c['title'] or c['id']} [{c['id']}]: {c['message']}")
             lines.append("")
         if self.quota_line:
             lines.append(self.quota_line)
